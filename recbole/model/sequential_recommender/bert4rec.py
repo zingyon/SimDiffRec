@@ -175,6 +175,19 @@ class BERT4Rec(SequentialRecommender):
         output = trm_output[-1]
         return output  # [B L H]
 
+    def forward_emb(self, item_seq, item_emb):
+        position_ids = torch.arange(item_seq.size(1), dtype=torch.long, device=item_seq.device)
+        position_ids = position_ids.unsqueeze(0).expand_as(item_seq)
+        position_embedding = self.position_embedding(position_ids)
+        # item_emb = self.item_embedding(item_seq)
+        input_emb = item_emb + position_embedding
+        input_emb = self.LayerNorm(input_emb)
+        input_emb = self.dropout(input_emb)
+        extended_attention_mask = self.get_attention_mask(item_seq, bidirectional=True)
+        trm_output = self.trm_encoder(input_emb, extended_attention_mask, output_all_encoded_layers=True)
+        output = trm_output[-1]
+        return output  # [B L H]
+    
     def multi_hot_embed(self, masked_index, max_length):
         """
         For memory, we only need calculate loss for masked position.
@@ -266,6 +279,20 @@ class BERT4Rec(SequentialRecommender):
         masked_item_seq = torch.cat((padd, masked_item_seq), dim=1).long()
         new_seq = masked_item_seq.scatter(-1, masked_index, scored_item)[:, 1:]
         return new_seq, loss
+    
+    def predictSeq_diffusion(self, item_seq, item_emb, masked_indices=None):
+
+        seq_output = self.forward_emb(item_seq, item_emb)
+        loss_fct = nn.CrossEntropyLoss(reduction='mean')
+        test_item_emb = self.item_embedding.weight[:self.n_items]
+        logits = torch.matmul(seq_output, test_item_emb.transpose(0, 1))
+        if masked_indices is not None:
+            loss = loss_fct(logits[masked_indices].view(-1, test_item_emb.size(0)), item_seq[masked_indices].view(-1))
+        else:
+            loss = loss_fct(logits.view(-1, test_item_emb.size(0)), item_seq.view(-1))
+
+
+        return logits, loss, seq_output
 
     def predict(self, interaction):
         item_seq = interaction[self.ITEM_SEQ]
